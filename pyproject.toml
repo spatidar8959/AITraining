@@ -1,0 +1,27 @@
+[project]
+name = "aitraining"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "pymysql",
+    "celery",
+    "redis",
+    "boto3",
+    "python-multipart",
+    "pillow",
+    "python-socketio",
+    "aiofiles",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "cryptography",
+    "google-cloud-aiplatform",
+    "google-auth",
+    "qdrant-client",
+    "requests",
+]
