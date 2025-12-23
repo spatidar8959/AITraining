@@ -24,6 +24,7 @@ from app.schemas import (
 )
 from app.tasks.training import train_frames_task, rollback_training_task
 from app.utils.logger import app_logger
+from app.utils.session import get_client_session_id, get_request_id
 
 # #region agent log
 DEBUG_LOG_PATH = os.getenv("DEBUG_LOG_PATH", "/app/project/logs/debug.log")
@@ -123,7 +124,11 @@ def list_training_jobs(
 
 
 @router.post("/execute", response_model=TrainingExecuteResponse, status_code=http_status.HTTP_200_OK)
-def execute_training(request: TrainingExecuteRequest, db: Session = Depends(get_db)):
+def execute_training(
+    request: TrainingExecuteRequest,
+    db: Session = Depends(get_db),
+    client_session_id: str = Depends(get_client_session_id)
+):
     """
     Execute training job for selected frames.
     """
@@ -254,8 +259,17 @@ def execute_training(request: TrainingExecuteRequest, db: Session = Depends(get_
 
         app_logger.info(f"Created training job {training_job.id} for video {request.video_id}, {len(frames)} frames")
 
-        # Trigger Celery task
-        task = train_frames_task.apply_async(args=[training_job.id])
+        # Generate request ID for this operation
+        request_id = get_request_id()
+
+        # Trigger Celery task with client session context
+        task = train_frames_task.apply_async(
+            args=[training_job.id],
+            kwargs={
+                "client_session_id": client_session_id,
+                "request_id": request_id
+            }
+        )
         training_job.celery_task_id = task.id
         db.commit()
 
@@ -359,7 +373,11 @@ def get_training_status(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{job_id}/rollback", response_model=TrainingRollbackResponse)
-def rollback_training(job_id: int, db: Session = Depends(get_db)):
+def rollback_training(
+    job_id: int,
+    db: Session = Depends(get_db),
+    client_session_id: str = Depends(get_client_session_id)
+):
     """
     Rollback a training job: delete embeddings from Qdrant and reset frame status.
     Can rollback completed jobs. Already rolled back jobs are skipped.
@@ -388,8 +406,17 @@ def rollback_training(job_id: int, db: Session = Depends(get_db)):
 
         app_logger.info(f"Starting rollback for training job {job_id}")
 
-        # Trigger rollback task
-        task = rollback_training_task.apply_async(args=[job_id])
+        # Generate request ID for this operation
+        request_id = get_request_id()
+
+        # Trigger rollback task with client session context
+        task = rollback_training_task.apply_async(
+            args=[job_id],
+            kwargs={
+                "client_session_id": client_session_id,
+                "request_id": request_id
+            }
+        )
 
         # Log rollback start
         log_entry = ProcessingLog(
@@ -419,7 +446,11 @@ def rollback_training(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{job_id}/resume", status_code=http_status.HTTP_200_OK)
-def resume_training(job_id: int, db: Session = Depends(get_db)):
+def resume_training(
+    job_id: int,
+    db: Session = Depends(get_db),
+    client_session_id: str = Depends(get_client_session_id)
+):
     """
     Resume a paused training job.
 
@@ -456,8 +487,17 @@ def resume_training(job_id: int, db: Session = Depends(get_db)):
         job.error_message = None
         db.commit()
 
-        # Trigger new Celery task (will process only remaining frames)
-        task = train_frames_task.apply_async(args=[job_id])
+        # Generate request ID for this operation
+        request_id = get_request_id()
+
+        # Trigger new Celery task with client session context (will process only remaining frames)
+        task = train_frames_task.apply_async(
+            args=[job_id],
+            kwargs={
+                "client_session_id": client_session_id,
+                "request_id": request_id
+            }
+        )
         job.celery_task_id = task.id
         db.commit()
 

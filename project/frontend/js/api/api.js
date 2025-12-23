@@ -21,6 +21,12 @@ class API {
             // Prepare headers - don't set Content-Type for FormData
             const headers = { ...options.headers };
             
+            // Add client session ID to all requests
+            const clientSessionId = state.get('clientSessionId');
+            if (clientSessionId) {
+                headers['X-Client-Session-Id'] = clientSessionId;
+            }
+            
             // Only set Content-Type if body is not FormData
             // FormData needs browser to set Content-Type with boundary automatically
             if (!(options.body instanceof FormData)) {

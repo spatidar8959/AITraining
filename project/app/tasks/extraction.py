@@ -38,7 +38,7 @@ class CallbackTask(Task):
 
 
 @celery_app.task(bind=True, base=CallbackTask, max_retries=3)
-def extract_frames_task(self, video_id: int):
+def extract_frames_task(self, video_id: int, client_session_id: str = None, request_id: str = None):
     """
     Extract frames from video using FFmpeg with checkpoint-based resumption.
 
@@ -67,8 +67,9 @@ def extract_frames_task(self, video_id: int):
                 celery_logger.error(f"Video {video_id} not found")
                 return
 
-            # Construct video file path
-            video_path = os.path.join(settings.TEMP_VIDEO_DIR, f"video_{video_id}_{video.filename}")
+            # Construct video file path using video hash to avoid collisions across DB resets
+            video_ext = Path(video.filename).suffix or ".mp4"
+            video_path = os.path.join(settings.TEMP_VIDEO_DIR, video.video_hash, f"{video.video_hash}{video_ext}")
             if not os.path.exists(video_path):
                 video.status = VideoStatus.FAILED
                 video.error_message = "Video file not found"
@@ -80,7 +81,7 @@ def extract_frames_task(self, video_id: int):
             celery_logger.info(f"Starting frame extraction for video_id={video_id}, fps={video.fps}")
 
             # Create temp directory for frames
-            frames_dir = os.path.join(settings.TEMP_FRAMES_DIR, f"video_{video_id}")
+            frames_dir = os.path.join(settings.TEMP_FRAMES_DIR, f"{video.video_hash}")
             os.makedirs(frames_dir, exist_ok=True)
 
             # Get video duration and calculate total frames
@@ -141,8 +142,8 @@ def extract_frames_task(self, video_id: int):
                     create_thumbnail(frame_path, thumbnail_path)
 
                     # Upload to S3
-                    s3_frame_key = f"{settings.S3_FRAMES_PREFIX}video_{video_id}/frame_{frame_number:06d}.jpg"
-                    s3_thumb_key = f"{settings.S3_THUMBNAILS_PREFIX}video_{video_id}/thumb_{frame_number:06d}.jpg"
+                    s3_frame_key = f"{settings.S3_FRAMES_PREFIX}{video.video_hash}/frame_{frame_number:06d}.jpg"
+                    s3_thumb_key = f"{settings.S3_THUMBNAILS_PREFIX}{video.video_hash}/thumb_{frame_number:06d}.jpg"
 
                     # Upload full frame
                     s3_service.upload_file(frame_path, s3_frame_key, content_type="image/jpeg")
@@ -180,14 +181,17 @@ def extract_frames_task(self, video_id: int):
                     current=batch_end,
                     total=total_frames,
                     percent=progress_percent,
-                    status="processing"
+                    status="processing",
+                    client_session_id=client_session_id,
+                    request_id=request_id
                 )
 
                 celery_logger.info(f"Batch {batch_start}-{batch_end} completed ({progress_percent:.1f}%)")
 
             # Delete video file (save storage space)
-            os.remove(video_path)
-            celery_logger.info(f"Video file deleted: {video_path}")
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                celery_logger.info(f"Video file deleted: {video_path}")
 
             # Update video status
             video.status = VideoStatus.EXTRACTED
@@ -230,14 +234,20 @@ def extract_frames_task(self, video_id: int):
                 current=total_frames,
                 total=total_frames,
                 percent=100.0,
-                status="completed"
+                status="completed",
+                client_session_id=client_session_id,
+                request_id=request_id
             )
 
             celery_logger.info(f"Frame extraction completed for video_id={video_id}")
 
             # Clean up temp directory
             if os.path.exists(frames_dir):
-                os.rmdir(frames_dir)
+                try:
+                    os.rmdir(frames_dir)
+                except OSError:
+                    # If not empty (unlikely), leave it; future runs can reuse
+                    pass
 
     except Exception as e:
         celery_logger.error(f"Error in extract_frames_task: {str(e)}")
@@ -307,7 +317,15 @@ def create_thumbnail(input_path: str, output_path: str):
         raise
 
 
-def broadcast_extraction_progress(video_id: int, current: int, total: int, percent: float, status: str):
+def broadcast_extraction_progress(
+    video_id: int,
+    current: int,
+    total: int,
+    percent: float,
+    status: str,
+    client_session_id: str = None,
+    request_id: str = None
+):
     """
     Broadcast extraction progress via Redis Pub/Sub.
 
@@ -317,6 +335,8 @@ def broadcast_extraction_progress(video_id: int, current: int, total: int, perce
         total: Total frame count
         percent: Progress percentage
         status: Status message
+        client_session_id: Client session ID for routing
+        request_id: Request ID for tracking
     """
     try:
         message = {
@@ -326,7 +346,9 @@ def broadcast_extraction_progress(video_id: int, current: int, total: int, perce
             "total": total,
             "percent": round(percent, 2),
             "status": status,
-            "message": f"Extracting frames: {current}/{total}"
+            "message": f"Extracting frames: {current}/{total}",
+            "client_session_id": client_session_id,
+            "request_id": request_id
         }
 
         redis_client.publish("progress_channel", json.dumps(message))

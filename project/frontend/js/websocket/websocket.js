@@ -20,10 +20,19 @@ class WebSocketManager {
         }
 
         this.isConnecting = true;
-        logger.info('WebSocket', 'Connecting...', { url: CONFIG.WS_URL });
+        
+        // Get client session ID and append to WebSocket URL
+        const clientSessionId = state.get('clientSessionId');
+        let wsUrl = CONFIG.WS_URL;
+        if (clientSessionId) {
+            const separator = wsUrl.includes('?') ? '&' : '?';
+            wsUrl = `${wsUrl}${separator}client_session_id=${encodeURIComponent(clientSessionId)}`;
+        }
+        
+        logger.info('WebSocket', 'Connecting...', { url: wsUrl, clientSessionId });
 
         try {
-            this.ws = new WebSocket(CONFIG.WS_URL);
+            this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {
                 logger.info('WebSocket', 'Connected successfully');

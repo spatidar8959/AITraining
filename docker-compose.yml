@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-Mysql12345}
-      MYSQL_DATABASE: ${DB_NAME:-asset_training}
+      MYSQL_DATABASE: ${DB_NAME:-asset_training_test}
     ports:
       - "${DB_PORT:-3307}:3306"
     volumes:
@@ -92,11 +92,11 @@ services:
       DB_PORT: 3306
       DB_USER: root
       DB_PASSWORD: ${DB_PASSWORD:-Mysql12345}
-      DB_NAME: ${DB_NAME:-asset_training}
+      DB_NAME: ${DB_NAME:-asset_training_test}
       REDIS_HOST: aitraining-redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-Redis12345}
-      REDIS_DB: 0
+      REDIS_DB: 1
       QDRANT_URL: http://aitraining-qdrant:6333
       APP_HOST: 0.0.0.0
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/app/project/cogent-tine-468410-k7-a3e226214d9a.json}
@@ -141,11 +141,11 @@ services:
       DB_PORT: 3306
       DB_USER: root
       DB_PASSWORD: ${DB_PASSWORD:-Mysql12345}
-      DB_NAME: ${DB_NAME:-asset_training}
+      DB_NAME: ${DB_NAME:-asset_training_test}
       REDIS_HOST: aitraining-redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-Redis12345}
-      REDIS_DB: 0
+      REDIS_DB: 1
       QDRANT_URL: http://aitraining-qdrant:6333
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-/app/project/cogent-tine-468410-k7-a3e226214d9a.json}
       TEMP_VIDEO_DIR: /app/project/temp/videos
@@ -167,7 +167,8 @@ services:
       --concurrency=4 
       --max-tasks-per-child=1000 
       --time-limit=7200 
-      --soft-time-limit=7000"
+      --soft-time-limit=7000 
+      --prefetch-multiplier=1"
     networks:
       - aitraining-network
 

@@ -1,7 +1,16 @@
 """
 Celery worker entry point
-Run with: celery -A celery_worker worker --loglevel=info --concurrency=4 --pool=solo
-Note: On Windows, use --pool=solo
+
+For Docker/Linux (recommended for production):
+    celery -A celery_worker worker --loglevel=info --concurrency=4 --pool=prefork
+
+For Windows (development only):
+    celery -A celery_worker worker --loglevel=info --pool=solo
+
+Note: 
+- Use --pool=prefork on Linux/Docker for true concurrency (multiple processes)
+- Use --pool=solo on Windows (single-threaded, no true concurrency)
+- Concurrency value should match your CPU cores (4-8 recommended)
 """
 from app.celery_app import celery_app
 from app.config import settings

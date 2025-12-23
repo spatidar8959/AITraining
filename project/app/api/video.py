@@ -26,6 +26,7 @@ from app.schemas import (
 )
 from app.utils.hash import calculate_md5_hash
 from app.utils.logger import app_logger
+from app.utils.session import get_client_session_id, get_request_id
 from app.config import settings
 
 # #region agent log
@@ -117,7 +118,7 @@ async def upload_video(
         # Create database record
         video_batch = VideoBatch(
             video_hash=video_hash,
-            filename=video.filename,
+            filename=video.filename,  # keep original filename for UI
             asset_name=asset_name,
             model_number=model_number,
             category=category,
@@ -132,12 +133,15 @@ async def upload_video(
         db.commit()
         db.refresh(video_batch)
 
-        # Rename temp file with video_id
-        final_filename = f"video_{video_batch.id}_{video.filename}"
-        final_path = os.path.join(settings.TEMP_VIDEO_DIR, final_filename)
+        # Use video hash for storage to avoid collisions across DB resets
+        video_ext = Path(video.filename).suffix or ".mp4"
+        hash_dir = os.path.join(settings.TEMP_VIDEO_DIR, video_hash)
+        os.makedirs(hash_dir, exist_ok=True)
+        final_filename = f"{video_hash}{video_ext}"
+        final_path = os.path.join(hash_dir, final_filename)
         os.rename(temp_path, final_path)
 
-        app_logger.info(f"Video uploaded successfully: video_id={video_batch.id}, filename={final_filename}")
+        app_logger.info(f"Video uploaded successfully: video_id={video_batch.id}, storage={final_path}")
 
         # Log successful upload
         log_entry = ProcessingLog(
@@ -179,7 +183,8 @@ async def upload_video(
 @router.post("/{video_id}/extract", response_model=ExtractionTriggerResponse)
 async def trigger_extraction(
     video_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    client_session_id: str = Depends(get_client_session_id)
 ):
     """
     Trigger frame extraction Celery task for uploaded video.
@@ -209,8 +214,15 @@ async def trigger_extraction(
         # Import Celery task
         from app.tasks.extraction import extract_frames_task
 
-        # Trigger Celery task - .delay() automatically queues for concurrent execution
-        task = extract_frames_task.delay(video_id)
+        # Generate request ID for this operation
+        request_id = get_request_id()
+
+        # Trigger Celery task with client session context
+        task = extract_frames_task.delay(
+            video_id=video_id,
+            client_session_id=client_session_id,
+            request_id=request_id
+        )
         
         # Multiple videos extract करने पर, अगर multiple workers हैं तो concurrent होगा
         # Single worker होने पर sequential होगा (expected behavior)

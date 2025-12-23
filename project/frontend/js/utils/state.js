@@ -48,6 +48,7 @@ class StateManager {
             selectedFrames: new Set(),
             selectedPoints: new Set(),
             currentTrainingJobId: null,
+            clientSessionId: this.getOrCreateClientSessionId(),
             filters: {
                 videoStatus: null,
                 videoCategory: null,
@@ -58,6 +59,29 @@ class StateManager {
             activeTrainings: new Map(),
             pollingIntervals: {}
         };
+    }
+
+    getOrCreateClientSessionId() {
+        try {
+            let sessionId = localStorage.getItem('client_session_id');
+            if (!sessionId) {
+                // Generate a UUID v4
+                sessionId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                    const r = Math.random() * 16 | 0;
+                    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                    return v.toString(16);
+                });
+                localStorage.setItem('client_session_id', sessionId);
+                logger.info('State', 'Generated new client session ID', { sessionId });
+            } else {
+                logger.debug('State', 'Using existing client session ID', { sessionId });
+            }
+            return sessionId;
+        } catch (error) {
+            logger.error('State', 'Failed to get or create client session ID', error);
+            // Fallback: generate a simple ID if localStorage fails
+            return 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+        }
     }
 
     saveState() {

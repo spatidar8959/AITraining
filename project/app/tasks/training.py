@@ -45,7 +45,7 @@ class CallbackTask(Task):
 
 
 @celery_app.task(bind=True, base=CallbackTask, max_retries=0)  # No auto-retry, we handle manually
-def train_frames_task(self, job_id: int):
+def train_frames_task(self, job_id: int, client_session_id: str = None, request_id: str = None):
     """
     Train selected frames by generating embeddings and uploading to Qdrant.
 
@@ -272,7 +272,9 @@ def train_frames_task(self, job_id: int):
                     current=batch_end,
                     total=total_frames,
                     percent=progress_percent,
-                    status="processing"
+                    status="processing",
+                    client_session_id=client_session_id,
+                    request_id=request_id
                 )
 
                 celery_logger.info(
@@ -371,7 +373,9 @@ def train_frames_task(self, job_id: int):
                 current=job.processed_frames,
                 total=total_frames,
                 percent=100.0,
-                status=final_status
+                status=final_status,
+                client_session_id=client_session_id,
+                request_id=request_id
             )
 
             celery_logger.info(
@@ -641,7 +645,7 @@ def process_single_frame(frame_data: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
 
 @celery_app.task(bind=True, base=CallbackTask, max_retries=0)
-def rollback_training_task(self, job_id: int):
+def rollback_training_task(self, job_id: int, client_session_id: str = None, request_id: str = None):
     """
     Rollback a training job: delete from Qdrant and reset frame status.
     Only rolls back frames that belong to this specific job.
@@ -804,16 +808,19 @@ def rollback_training_task(self, job_id: int):
                 f"{delete_result['success']} Qdrant points deleted"
             )
             
-            # Broadcast rollback completion via WebSocket/Redis
+            # Broadcast rollback completion via Redis
             try:
-                from app.websocket.manager import broadcast_message
-                broadcast_message({
+                message = {
                     "type": "rollback_completed",
                     "job_id": job_id,
                     "video_id": job.video_id,
                     "frames_reset": frames_reset,
-                    "qdrant_deleted": delete_result['success']
-                })
+                    "qdrant_deleted": delete_result['success'],
+                    "client_session_id": client_session_id,
+                    "request_id": request_id
+                }
+                redis_client.publish("progress_channel", json.dumps(message))
+                celery_logger.debug(f"Rollback completion broadcast: {message}")
             except Exception as e:
                 celery_logger.warning(f"Could not broadcast rollback completion: {str(e)}")
 
@@ -822,7 +829,16 @@ def rollback_training_task(self, job_id: int):
         raise
 
 
-def broadcast_training_progress(job_id: int, video_id: int, current: int, total: int, percent: float, status: str):
+def broadcast_training_progress(
+    job_id: int,
+    video_id: int,
+    current: int,
+    total: int,
+    percent: float,
+    status: str,
+    client_session_id: str = None,
+    request_id: str = None
+):
     """
     Broadcast training progress via Redis Pub/Sub.
 
@@ -833,6 +849,8 @@ def broadcast_training_progress(job_id: int, video_id: int, current: int, total:
         total: Total frame count
         percent: Progress percentage
         status: Status message
+        client_session_id: Client session ID for routing
+        request_id: Request ID for tracking
     """
     try:
         message = {
@@ -843,7 +861,9 @@ def broadcast_training_progress(job_id: int, video_id: int, current: int, total:
             "total": total,
             "percent": round(percent, 2),
             "status": status,
-            "message": f"Training frames: {current}/{total}"
+            "message": f"Training frames: {current}/{total}",
+            "client_session_id": client_session_id,
+            "request_id": request_id
         }
 
         redis_client.publish("progress_channel", json.dumps(message))

@@ -67,21 +67,58 @@ pubsub = redis_client.pubsub()
 # WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Set[WebSocket] = set()
+        # Map client_session_id -> set of WebSocket connections
+        self.connections_by_session: dict[str, Set[WebSocket]] = {}
+        # Map WebSocket -> client_session_id for cleanup
+        self.session_by_connection: dict[WebSocket, str] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, client_session_id: str):
         await websocket.accept()
-        self.active_connections.add(websocket)
-        app_logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
+        
+        # Add to session mapping
+        if client_session_id not in self.connections_by_session:
+            self.connections_by_session[client_session_id] = set()
+        self.connections_by_session[client_session_id].add(websocket)
+        self.session_by_connection[websocket] = client_session_id
+        
+        app_logger.info(
+            f"WebSocket connected. Session: {client_session_id}, "
+            f"Total sessions: {len(self.connections_by_session)}, "
+            f"Total connections: {sum(len(conns) for conns in self.connections_by_session.values())}"
+        )
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.discard(websocket)
-        app_logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
+        client_session_id = self.session_by_connection.pop(websocket, None)
+        if client_session_id:
+            session_connections = self.connections_by_session.get(client_session_id)
+            if session_connections:
+                session_connections.discard(websocket)
+                # Clean up empty session entries
+                if not session_connections:
+                    del self.connections_by_session[client_session_id]
+        
+        app_logger.info(
+            f"WebSocket disconnected. Session: {client_session_id}, "
+            f"Total sessions: {len(self.connections_by_session)}, "
+            f"Total connections: {sum(len(conns) for conns in self.connections_by_session.values())}"
+        )
 
-    async def broadcast(self, message: dict):
-        """Broadcast message to all connected clients"""
+    async def broadcast_to_client(self, client_session_id: str, message: dict):
+        """
+        Broadcast message only to clients with matching client_session_id.
+        
+        Args:
+            client_session_id: Target client session ID
+            message: Message to send
+        """
+        if client_session_id not in self.connections_by_session:
+            app_logger.debug(f"No connections found for session: {client_session_id}")
+            return
+        
         disconnected = set()
-        for connection in self.active_connections:
+        connections = self.connections_by_session[client_session_id]
+        
+        for connection in connections:
             try:
                 await connection.send_json(message)
             except Exception as e:
@@ -89,7 +126,32 @@ class ConnectionManager:
                 disconnected.add(connection)
 
         # Remove disconnected clients
-        self.active_connections -= disconnected
+        for conn in disconnected:
+            self.disconnect(conn)
+
+    async def broadcast(self, message: dict):
+        """
+        Broadcast message to all connected clients (legacy method for backward compatibility).
+        Prefer using broadcast_to_client for session-specific messages.
+        """
+        client_session_id = message.get("client_session_id")
+        if client_session_id:
+            # Route to specific client session
+            await self.broadcast_to_client(client_session_id, message)
+        else:
+            # Fallback: broadcast to all (for messages without session ID)
+            disconnected = set()
+            for session_connections in self.connections_by_session.values():
+                for connection in session_connections:
+                    try:
+                        await connection.send_json(message)
+                    except Exception as e:
+                        app_logger.error(f"Error sending to WebSocket: {str(e)}")
+                        disconnected.add(connection)
+
+            # Remove disconnected clients
+            for conn in disconnected:
+                self.disconnect(conn)
 
 
 manager = ConnectionManager()
@@ -164,13 +226,28 @@ async def redis_subscriber():
 
 
 @app.websocket("/ws/progress")
-async def websocket_progress(websocket: WebSocket):
+async def websocket_progress(websocket: WebSocket, client_session_id: str = None):
     """
     WebSocket endpoint for real-time progress updates.
 
     Clients connect here to receive extraction and training progress updates.
+    The client_session_id is extracted from the query string.
+    
+    Args:
+        websocket: WebSocket connection
+        client_session_id: Client session ID from query parameter
     """
-    await manager.connect(websocket)
+    # Extract client_session_id from query parameters if not provided
+    if not client_session_id:
+        query_params = dict(websocket.query_params)
+        client_session_id = query_params.get("client_session_id")
+    
+    if not client_session_id:
+        app_logger.warning("WebSocket connection without client_session_id, generating one")
+        import uuid
+        client_session_id = str(uuid.uuid4())
+    
+    await manager.connect(websocket, client_session_id)
     try:
         while True:
             # Keep connection alive with heartbeat
@@ -180,7 +257,7 @@ async def websocket_progress(websocket: WebSocket):
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-        app_logger.info("Client disconnected")
+        app_logger.info(f"Client disconnected (session: {client_session_id})")
     except Exception as e:
         app_logger.error(f"WebSocket error: {str(e)}")
         manager.disconnect(websocket)

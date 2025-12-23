@@ -7,6 +7,13 @@ class App {
         logger.info('App', 'Initializing application');
         
         try {
+            // Ensure client session ID is initialized
+            const clientSessionId = state.get('clientSessionId');
+            if (!clientSessionId) {
+                state.set('clientSessionId', state.getOrCreateClientSessionId());
+            }
+            logger.info('App', 'Client session initialized', { clientSessionId: state.get('clientSessionId') });
+            
             this.setupNav();
             this.registerRoutes();
             router.init();
@@ -113,6 +120,18 @@ class App {
 
         // Handle extraction progress
         wsManager.on('extraction_progress', (data) => {
+            // Filter by client session ID - only process events for this client
+            const currentSessionId = state.get('clientSessionId');
+            if (data.client_session_id && data.client_session_id !== currentSessionId) {
+                if (CONFIG.ENABLE_WS_LOGGING) {
+                    logger.debug('App', 'Ignoring extraction progress for different session', {
+                        received: data.client_session_id,
+                        current: currentSessionId
+                    });
+                }
+                return; // Ignore events from other sessions
+            }
+
             if (CONFIG.ENABLE_WS_LOGGING) {
                 logger.info('App', 'Extraction progress received', data);
             }
@@ -156,6 +175,18 @@ class App {
 
         // Handle training progress
         wsManager.on('training_progress', (data) => {
+            // Filter by client session ID - only process events for this client
+            const currentSessionId = state.get('clientSessionId');
+            if (data.client_session_id && data.client_session_id !== currentSessionId) {
+                if (CONFIG.ENABLE_WS_LOGGING) {
+                    logger.debug('App', 'Ignoring training progress for different session', {
+                        received: data.client_session_id,
+                        current: currentSessionId
+                    });
+                }
+                return; // Ignore events from other sessions
+            }
+
             if (CONFIG.ENABLE_WS_LOGGING) {
                 logger.info('App', 'Training progress received', data);
             }
@@ -219,6 +250,18 @@ class App {
 
         // Handle rollback completion
         wsManager.on('rollback_completed', (data) => {
+            // Filter by client session ID - only process events for this client
+            const currentSessionId = state.get('clientSessionId');
+            if (data.client_session_id && data.client_session_id !== currentSessionId) {
+                if (CONFIG.ENABLE_WS_LOGGING) {
+                    logger.debug('App', 'Ignoring rollback completion for different session', {
+                        received: data.client_session_id,
+                        current: currentSessionId
+                    });
+                }
+                return; // Ignore events from other sessions
+            }
+
             if (CONFIG.ENABLE_WS_LOGGING) {
                 logger.info('App', 'Rollback completed', data);
             }
