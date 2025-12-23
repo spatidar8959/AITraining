@@ -468,6 +468,8 @@ async def update_video_metadata(
         Success message
     """
     try:
+        from app.services.qdrant_service import qdrant_service
+
         # Get video
         video = db.query(VideoBatch).filter(VideoBatch.id == video_id).first()
         if not video:
@@ -492,10 +494,60 @@ async def update_video_metadata(
         if longitude is not None:
             video.longitude = longitude
 
+        # Commit video metadata changes first to ensure DB is consistent
         db.commit()
         db.refresh(video)
 
         app_logger.info(f"Video {video_id} metadata updated")
+
+        # Propagate updated metadata to Qdrant payloads for all trained frames of this video
+        updated_qdrant_count = 0
+        try:
+            # Get all trained frames with valid Qdrant point IDs
+            trained_frames = (
+                db.query(ExtractedFrame)
+                .filter(
+                    ExtractedFrame.video_id == video_id,
+                    ExtractedFrame.status == FrameStatus.TRAINED,
+                    ExtractedFrame.qdrant_point_id.isnot(None)
+                )
+                .all()
+            )
+
+            for frame in trained_frames:
+                payload = {
+                    "asset_name": video.asset_name,
+                    "image_id": str(frame.id),
+                    "model_id": video.model_number or "",
+                    "category": video.category,
+                    "manufacturer_name": video.manufacturer or "",
+                    "image_path": frame.s3_path,
+                    "ai_attributes": video.ai_attributes or "",
+                    "location": {
+                        "lon": float(video.longitude or 0),
+                        "lat": float(video.latitude or 0)
+                    }
+                }
+
+                try:
+                    success = qdrant_service.update_point_payload(
+                        point_id=frame.qdrant_point_id,
+                        payload=payload
+                    )
+                    if success:
+                        updated_qdrant_count += 1
+                except Exception as qe:
+                    # Best-effort: log failure but don't break the API contract
+                    app_logger.error(
+                        f"Failed to update Qdrant payload for frame {frame.id}, "
+                        f"point {frame.qdrant_point_id}: {qe}"
+                    )
+        except Exception as outer_qe:
+            # Any unexpected error while propagating to Qdrant should be logged only
+            app_logger.error(
+                f"Error while propagating video metadata to Qdrant for video {video_id}: {outer_qe}"
+            )
+            updated_qdrant_count = 0
 
         # Log update
         log_entry = ProcessingLog(
@@ -506,7 +558,8 @@ async def update_video_metadata(
             message="Video metadata updated",
             extra_metadata={
                 "asset_name": asset_name,
-                "category": category
+                "category": category,
+                "qdrant_trained_frames_updated": updated_qdrant_count
             }
         )
         db.add(log_entry)
@@ -514,7 +567,8 @@ async def update_video_metadata(
 
         return {
             "message": "Video metadata updated successfully",
-            "video_id": video_id
+            "video_id": video_id,
+            "qdrant_trained_frames_updated": updated_qdrant_count
         }
 
     except HTTPException:
